@@ -1,14 +1,73 @@
 """
 Application Streamlit de Surveillance Agricole
-Monitoring des conditions d'un champ avec données Open-Meteo
+Monitoring des conditions d'un champ avec données Open-Meteo.
+Contrôle de la vanne (ESP32/Heltec) via Firebase Realtime Database.
 """
 
+import os
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 from datetime import datetime, timedelta
 import time
+
+# Firebase : même base que l'Arduino (path /vanne/etat)
+FIREBASE_DATABASE_URL = os.environ.get(
+    "FIREBASE_DATABASE_URL",
+    "https://esp32-spi-projet-default-rtdb.europe-west1.firebasedatabase.app"
+)
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    os.path.join(os.path.dirname(__file__), "firebase_credentials.json")
+)
+
+# Cache pour l'instance Firebase (éviter ré-init à chaque rerun)
+_firebase_app = None
+
+
+def get_firebase_app():
+    """Initialise et retourne l'app Firebase si les credentials sont présents."""
+    global _firebase_app
+    if _firebase_app is not None:
+        return _firebase_app
+    if not os.path.isfile(FIREBASE_CREDENTIALS_PATH):
+        return None
+    try:
+        import firebase_admin
+        from firebase_admin import credentials
+        cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
+        _firebase_app = firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
+        return _firebase_app
+    except Exception:
+        return None
+
+
+def firebase_get_vanne_etat():
+    """Lit l'état actuel de la vanne depuis Firebase (/vanne/etat). Retourne None si indisponible."""
+    try:
+        app = get_firebase_app()
+        if app is None:
+            return None
+        from firebase_admin import db
+        ref = db.reference("/vanne/etat")
+        return ref.get()
+    except Exception:
+        return None
+
+
+def firebase_set_vanne_etat(etat: bool) -> bool:
+    """Écrit l'état de la vanne dans Firebase (/vanne/etat). Retourne True si succès."""
+    try:
+        app = get_firebase_app()
+        if app is None:
+            return False
+        from firebase_admin import db
+        ref = db.reference("/vanne")
+        ref.update({"etat": etat})
+        return True
+    except Exception:
+        return False
 
 # Configuration de la page
 st.set_page_config(
@@ -413,6 +472,44 @@ with st.spinner("🔄 Chargement des données depuis Open-Meteo..."):
     df = process_meteo_data(api_data)
 
 # ============================================================================
+# CONTRÔLE VANNE (Firebase / ESP32)
+# ============================================================================
+st.subheader("🚰 Contrôle de la vanne (ESP32 / Heltec)")
+st.caption("Commande envoyée à Firebase Realtime Database (path : /vanne/etat). Votre Arduino lit cette valeur et pilote la LED/vanne.")
+
+firebase_ok = get_firebase_app() is not None
+if not firebase_ok:
+    st.warning(
+        "⚠️ **Firebase non configuré** — Pour piloter la vanne depuis le site, ajoutez le fichier de compte de service Firebase : "
+        "téléchargez-le depuis la console Firebase (Paramètres du projet → Comptes de service → Générer une nouvelle clé privée) "
+        "et enregistrez-le sous le nom `firebase_credentials.json` dans le dossier de l'application, ou définissez la variable d'environnement `GOOGLE_APPLICATION_CREDENTIALS`."
+    )
+else:
+    # Lecture de l'état actuel depuis Firebase (même path que l'Arduino : /vanne/etat)
+    etat_actuel = firebase_get_vanne_etat()
+    if etat_actuel is None:
+        etat_actuel = False  # défaut : éteint
+    if "vanne_etat" not in st.session_state:
+        st.session_state.vanne_etat = etat_actuel
+    # Synchroniser l'affichage avec Firebase à chaque chargement
+    st.session_state.vanne_etat = etat_actuel
+
+    col_vanne1, col_vanne2 = st.columns([1, 2])
+    with col_vanne1:
+        nouveau_etat = st.toggle("Vanne **ON** / OFF", value=st.session_state.vanne_etat, key="vanne_toggle")
+    with col_vanne2:
+        if nouveau_etat != etat_actuel:
+            if firebase_set_vanne_etat(nouveau_etat):
+                st.session_state.vanne_etat = nouveau_etat
+                st.success("État envoyé à Firebase : **" + ("ON" if nouveau_etat else "OFF") + "** — l'ESP32 va mettre à jour la vanne/LED.")
+            else:
+                st.error("Impossible d'écrire dans Firebase.")
+        else:
+            st.info("État actuel : **" + ("ON" if etat_actuel else "OFF") + "** (synchronisé avec l'ESP32)")
+
+st.markdown("---")
+
+# ============================================================================
 # DASHBOARD PRINCIPAL
 # ============================================================================
 
@@ -613,3 +710,12 @@ Modifiez le paramètre `hourly` dans la fonction `fetch_open_meteo_data()` :
 Voir la documentation : https://open-meteo.com/en/docs
 """)
 
+st.sidebar.markdown("### 🚰 Contrôle vanne (Firebase)")
+st.sidebar.info("""
+Le site écrit l'état de la vanne dans Firebase au path **/vanne/etat** (booléen), comme votre code Arduino.
+
+Pour activer le contrôle :
+1. Console Firebase → Paramètres du projet → Comptes de service
+2. « Générer une nouvelle clé privée »
+3. Enregistrer le fichier sous le nom **firebase_credentials.json** dans le dossier `SPI_Agri`
+""")

@@ -1,0 +1,17 @@
+# Clé Firebase (ne jamais committer)
+firebase_credentials.json
+*service*account*.json
+
+# Environnement virtuel
+.venv/
+venv/
+env/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Streamlit
+.streamlit/secrets.toml
