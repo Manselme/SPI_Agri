@@ -17,29 +17,38 @@ FIREBASE_DATABASE_URL = os.environ.get(
     "FIREBASE_DATABASE_URL",
     "https://esp32-spi-projet-default-rtdb.europe-west1.firebasedatabase.app"
 )
-FIREBASE_CREDENTIALS_PATH = os.environ.get(
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    os.path.join(os.path.dirname(__file__), "firebase_credentials.json")
-)
+# Priorité : fichier local dans le dossier de l'app, puis GOOGLE_APPLICATION_CREDENTIALS
+_DIR_APP = os.path.dirname(os.path.abspath(__file__))
+FIREBASE_CREDENTIALS_PATH = os.path.join(_DIR_APP, "firebase_credentials.json")
+if not os.path.isfile(FIREBASE_CREDENTIALS_PATH) and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    FIREBASE_CREDENTIALS_PATH = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
 
 # Cache pour l'instance Firebase (éviter ré-init à chaque rerun)
 _firebase_app = None
+_firebase_error = None  # Dernière erreur pour affichage diagnostic
 
 
 def get_firebase_app():
     """Initialise et retourne l'app Firebase si les credentials sont présents."""
-    global _firebase_app
+    global _firebase_app, _firebase_error
     if _firebase_app is not None:
         return _firebase_app
+    _firebase_error = None
     if not os.path.isfile(FIREBASE_CREDENTIALS_PATH):
+        _firebase_error = f"Fichier introuvable : {FIREBASE_CREDENTIALS_PATH}"
         return None
     try:
         import firebase_admin
         from firebase_admin import credentials
+        # Si déjà initialisé (ex: re-run Streamlit), récupérer l'app existante
+        if firebase_admin._apps:
+            _firebase_app = firebase_admin.get_app()
+            return _firebase_app
         cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
         _firebase_app = firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
         return _firebase_app
-    except Exception:
+    except Exception as e:
+        _firebase_error = str(e)
         return None
 
 
@@ -479,11 +488,13 @@ st.caption("Commande envoyée à Firebase Realtime Database (path : /vanne/etat)
 
 firebase_ok = get_firebase_app() is not None
 if not firebase_ok:
+    err_msg = _firebase_error or "Fichier firebase_credentials.json introuvable."
     st.warning(
         "⚠️ **Firebase non configuré** — Pour piloter la vanne depuis le site, ajoutez le fichier de compte de service Firebase : "
         "téléchargez-le depuis la console Firebase (Paramètres du projet → Comptes de service → Générer une nouvelle clé privée) "
-        "et enregistrez-le sous le nom `firebase_credentials.json` dans le dossier de l'application, ou définissez la variable d'environnement `GOOGLE_APPLICATION_CREDENTIALS`."
+        "et enregistrez-le sous le nom `firebase_credentials.json` dans le dossier de l'application."
     )
+    st.error(f"**Détail :** {err_msg}")
 else:
     # Lecture de l'état actuel depuis Firebase (même path que l'Arduino : /vanne/etat)
     etat_actuel = firebase_get_vanne_etat()
